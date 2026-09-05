@@ -1,6 +1,6 @@
 # Third-party notices
 
-QuotaNook source is MIT licensed. Dependencies retain their own licenses.
+Quota source is MIT licensed. Dependencies retain their own licenses.
 
 - PySide6 / Qt / Shiboken6: LGPLv3 / GPLv3 / commercial licensing, as applicable to the installed components. https://doc.qt.io/qtforpython-6/licenses.html
 - psutil: BSD-3-Clause. https://github.com/giampaolo/psutil
