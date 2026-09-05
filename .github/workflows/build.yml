@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash macos/build.sh
-      - run: dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --self-test
-      - run: dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --transport-test
-      - run: ditto -c -k --sequesterRsrc --keepParent dist/QuotaNook.app dist/QuotaNook-macOS.zip
+      - run: dist/Quota.app/Contents/MacOS/CodexQuotaIsland --self-test
+      - run: dist/Quota.app/Contents/MacOS/CodexQuotaIsland --transport-test
+      - run: ditto -c -k --sequesterRsrc --keepParent dist/Quota.app dist/Quota-macOS.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: QuotaNook-macOS
-          path: dist/QuotaNook-macOS.zip
+          name: Quota-macOS
+          path: dist/Quota-macOS.zip
   windows:
     runs-on: windows-latest
     steps:
@@ -33,5 +33,5 @@ jobs:
       - run: ./windows/build.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: QuotaNook-Windows-preview
-          path: dist/QuotaNook/
+          name: Quota-Windows-preview
+          path: dist/Quota/
