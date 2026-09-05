@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication
 from main import Island
 
 app=QApplication([])
-app.setApplicationName('QuotaNook-test')
+app.setApplicationName('Quota-test')
 island=Island(demo=True)
 app.processEvents()
 assert not island.grab().isNull()

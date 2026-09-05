@@ -1,4 +1,4 @@
-"""QuotaNook Windows desktop edition. Run --demo for a credential-free preview."""
+"""Quota Windows desktop edition. Run --demo for a credential-free preview."""
 import math
 import os
 from pathlib import Path
@@ -82,8 +82,8 @@ class Island(QWidget):
     def __init__(self, demo=False):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle('QuotaNook · 余隅')
-        self.setAccessibleName('QuotaNook 额度浮窗，点击展开，拖动移动')
+        self.setWindowTitle('Quota')
+        self.setAccessibleName('Quota 额度浮窗，点击展开，拖动移动')
         self.demo, self.expanded, self.busy = demo, False, False
         self.motion = True
         self.snapshot = None
@@ -112,7 +112,7 @@ class Island(QWidget):
         painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, 'Q')
         painter.end()
         self.tray = QSystemTrayIcon(QIcon(pix), self)
-        self.tray.setToolTip('QuotaNook · 余隅')
+        self.tray.setToolTip('Quota')
         menu = QMenu()
         menu.addAction('刷新额度', self.refresh)
         motion = menu.addAction('动态效果')
@@ -227,8 +227,8 @@ class Island(QWidget):
                 text(x+43,18,f"{win['remaining']:.0f}%",10)
                 bar(x,26,80,win['remaining'])
         else:
-            text(43,35,'QuotaNook',16)
-            text(24,55,'余隅 · '+str((self.snapshot or {}).get('plan','')),9,'#929d96')
+            text(43,35,'Quota',16)
+            text(24,55,str((self.snapshot or {}).get('plan','')),9,'#929d96')
             text(315,35,'⌃',15)
             for i,win in enumerate(windows[:2]):
                 y=92+i*88
@@ -298,9 +298,9 @@ class Island(QWidget):
 
 if __name__=='__main__':
     app=QApplication(sys.argv)
-    app.setApplicationName('QuotaNook')
+    app.setApplicationName('Quota')
     app.setQuitOnLastWindowClosed(False)
-    lock=QLockFile(str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation))/'quotanook.lock'))
+    lock=QLockFile(str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation))/'quota.lock'))
     if not lock.tryLock(100):
         sys.exit(0)
     island=Island('--demo' in sys.argv)

@@ -102,7 +102,7 @@ class Session:
             stderr=subprocess.DEVNULL, text=True, encoding='utf-8', bufsize=1,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         threading.Thread(target=self._reader, daemon=True).start()
-        self.request('initialize', {'clientInfo': {'name': 'quotanook', 'title': 'QuotaNook', 'version': '0.1.0'}})
+        self.request('initialize', {'clientInfo': {'name': 'quota', 'title': 'Quota', 'version': '0.1.0'}})
         self.send({'method': 'initialized', 'params': {}})
 
     def _reader(self):
