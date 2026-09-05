@@ -1,6 +1,8 @@
-# QuotaNook · 余隅
+# Quota
 
-**给你的 AI 额度，留一处安静的角落。**
+**简洁、实时的 Codex 额度浮窗。**
+
+![Quota desktop quota island](assets/hero.jpg)
 
 A tiny floating nook for your Codex quota. macOS + Windows.
 
@@ -34,10 +36,10 @@ Windows 初版为预览版。CI 在两个系统构建并上传产物；构建成
 
 ```sh
 bash macos/build.sh
-open dist/QuotaNook.app
+open dist/Quota.app
 ```
 
-可将应用复制到 Applications，再在系统“登录项”添加 QuotaNook。
+可将应用复制到 Applications，再在系统“登录项”添加 Quota。
 当前构建为临时签名，未经过 Apple 公证。
 
 ### Windows
@@ -60,7 +62,7 @@ $env:QUOTANOOK_ALWAYS_SHOW = '1'
 
 找不到 CLI 时，设置 `QUOTANOOK_CODEX` 为原生 `codex.exe` 的完整路径。
 不接受 `.cmd` / `.bat` 包装器；npm 安装目录中的原生可执行文件会自动搜索。
-用系统 Python 安装依赖后，运行 `windows/build.ps1` 可生成 `dist/QuotaNook/QuotaNook.exe`。
+用系统 Python 安装依赖后，运行 `windows/build.ps1` 可生成 `dist/Quota/Quota.exe`。
 分发时保留整个目录，包括 Qt 库和许可证。可将 exe 的快捷方式放入 `shell:startup` 实现登录启动。
 
 无账号效果预览：`python windows/main.py --demo`。
@@ -79,9 +81,9 @@ $env:QUOTANOOK_ALWAYS_SHOW = '1'
 ```sh
 python -m unittest discover -s windows/tests -v
 bash macos/build.sh
-dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --self-test
-dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --transport-test
-dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --layout-test
+dist/Quota.app/Contents/MacOS/CodexQuotaIsland --self-test
+dist/Quota.app/Contents/MacOS/CodexQuotaIsland --transport-test
+dist/Quota.app/Contents/MacOS/CodexQuotaIsland --layout-test
 ```
 
 测试使用虚构数据和假服务，不消耗真实重置卡。UI 检查：安装 Windows 依赖后执行
@@ -94,7 +96,7 @@ dist/QuotaNook.app/Contents/MacOS/CodexQuotaIsland --layout-test
 请勿在 Issue 上传登录文件、令牌、真实账号标识或未经检查的日志。
 
 源代码采用 [MIT](LICENSE)。[第三方依赖说明](THIRD_PARTY_NOTICES.md)。
-QuotaNook 是独立社区项目，与 OpenAI 没有隶属或背书关系。公开版使用自己的 Q 标识。
+Quota 是独立社区项目，与 OpenAI 没有隶属或背书关系。公开版使用自己的 Q 标识。
 
 协议依据：[Codex App Server](https://developers.openai.com/codex/app-server)。
 Windows 打包参考：[Qt for Python / PyInstaller](https://doc.qt.io/qtforpython-6.10/deployment/deployment-pyinstaller.html)。
