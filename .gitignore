@@ -1,0 +1,11 @@
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+*.spec
+.DS_Store
+.env*
+auth.json
+pending-resets.json
+*.log
