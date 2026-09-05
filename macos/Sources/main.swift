@@ -538,7 +538,7 @@ struct GPTLogo: View {
         .font(.system(size: size, weight: .semibold, design: .rounded))
         .frame(width: size, height: size)
         .foregroundStyle(.white.opacity(0.95))
-        .accessibilityLabel("QuotaNook")
+        .accessibilityLabel("Quota")
     }
 }
 
@@ -640,7 +640,7 @@ struct ExpandedIslandView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             GPTLogo(size: 20)
-                            Text("QuotaNook")
+                            Text("Quota")
                                 .font(.system(size: 18, weight: .semibold))
                         }
                         Text(connectionSubtitle)
