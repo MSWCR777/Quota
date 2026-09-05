@@ -5,11 +5,11 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
-    <string>QuotaNook · 余隅</string>
+    <string>Quota</string>
     <key>CFBundleExecutable</key>
     <string>CodexQuotaIsland</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.quotanook</string>
+    <string>io.github.mswcr777.quota</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
