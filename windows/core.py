@@ -86,8 +86,24 @@ def parse_snapshot(payload):
         windows.append(dict(remaining=max(0, min(100, 100-used)), duration=int(duration), reset=reset))
     if not windows:
         raise ValueError('当前账号未返回额度窗口')
-    credits = (payload.get('rateLimitResetCredits') or {}).get('availableCount')
-    return dict(windows=windows, account=payload.get('accountId'), credits=credits,
+    credit_container = payload.get('rateLimitResetCredits') or {}
+    credits = credit_container.get('availableCount')
+    credit_items = []
+    for item in credit_container.get('credits') or []:
+        try:
+            if item.get('status') != 'available' or not item.get('id'):
+                continue
+            granted = float(item['grantedAt'])
+            expires = item.get('expiresAt')
+            expires = float(expires) if expires is not None else None
+            if not math.isfinite(granted) or (expires is not None and not math.isfinite(expires)):
+                continue
+            credit_items.append({'id': item['id'], 'granted': granted, 'expires': expires,
+                                 'title': item.get('title')})
+        except (KeyError, TypeError, ValueError):
+            continue
+    credit_items.sort(key=lambda item: item['expires'] if item['expires'] is not None else math.inf)
+    return dict(windows=windows, account=payload.get('accountId'), credits=credits, credit_items=credit_items,
                 plan=bucket.get('planType') or '', updated=time.time())
 
 
@@ -125,17 +141,17 @@ class PendingKeys:
         temp.write_text(json.dumps(data), encoding='utf-8')
         temp.replace(self.path)
 
-    def key(self, account):
-        digest = hashlib.sha256(account.encode()).hexdigest()
+    def key(self, account, credit=''):
+        digest = hashlib.sha256((account + '\0' + credit).encode()).hexdigest()
         data = self._read()
         if digest not in data:
             data[digest] = str(uuid.uuid4())
             self._write(data)
         return data[digest]
 
-    def resolve(self, account):
+    def resolve(self, account, credit=''):
         data = self._read()
-        data.pop(hashlib.sha256(account.encode()).hexdigest(), None)
+        data.pop(hashlib.sha256((account + '\0' + credit).encode()).hexdigest(), None)
         self._write(data)
 
 
