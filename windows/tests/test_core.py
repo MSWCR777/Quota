@@ -15,6 +15,17 @@ class CoreTests(unittest.TestCase):
     def test_missing_credits_are_not_zero(self):
         self.assertIsNone(parse_snapshot(self.payload())['credits'])
 
+    def test_reset_credit_details_are_filtered_and_sorted(self):
+        data = self.payload()
+        data['rateLimitResetCredits'] = {'availableCount': 2, 'credits': [
+            {'id': 'later', 'status': 'available', 'grantedAt': 1700000000, 'expiresAt': 1900000200},
+            {'id': 'used', 'status': 'consumed', 'grantedAt': 1700000000},
+            {'id': 'sooner', 'status': 'available', 'grantedAt': 1700000000, 'expiresAt': 1900000100},
+        ]}
+        snapshot = parse_snapshot(data)
+        self.assertEqual(snapshot['credits'], 2)
+        self.assertEqual([item['id'] for item in snapshot['credit_items']], ['sooner', 'later'])
+
     def test_named_bucket_and_clamping(self):
         data=self.payload()
         bucket=data.pop('rateLimits')
@@ -38,6 +49,7 @@ class CoreTests(unittest.TestCase):
             a=store.key('a')
             self.assertEqual(a,PendingKeys(path).key('a'))
             self.assertNotEqual(a,store.key('b'))
+            self.assertNotEqual(a,store.key('a', 'credit-2'))
             store.resolve('a')
             self.assertNotEqual(a,store.key('a'))
             path.write_text('broken',encoding='utf-8')
