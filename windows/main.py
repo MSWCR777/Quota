@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QLinearGradient, QFont
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QWidget, QSystemTrayIcon, QMenu, QDialog,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame, QButtonGroup)
-from core import Session, PendingKeys, MobileQuotaSync, credential_stamp, discover_codex, parse_snapshot
+from core import Session, PendingKeys, credential_stamp, discover_codex, parse_snapshot
 
 
 def windows_session_id():
@@ -57,9 +57,9 @@ def notify_existing_instance():
 
 
 class Worker(threading.Thread):
-    def __init__(self, events, keys, mobile):
+    def __init__(self, events, keys):
         super().__init__(daemon=True)
-        self.events, self.keys, self.mobile = events, keys, mobile
+        self.events, self.keys = events, keys
         self.commands = queue.Queue()
         self.done = threading.Event()
         self.session = None
@@ -103,10 +103,6 @@ class Worker(threading.Thread):
                         'noCredit': '没有可用重置卡', 'nothingToReset': '当前无需重置'}.get(outcome, '结果未确认，重试会复用原请求')))
                 data = parse_snapshot(self.session.request('account/rateLimits/read'))
                 data['stamp'] = self.session.stamp
-                try:
-                    self.events.put((generation, 'pair', self.mobile.sync(data)))
-                except Exception:
-                    pass
                 self.events.put((generation, 'snapshot', data))
             except Exception as error:
                 self.events.put((generation, 'error', str(error)))
@@ -247,8 +243,7 @@ class Island(QWidget):
         self.dragged = False
         self.events = queue.Queue()
         folder = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
-        self.worker = Worker(self.events, PendingKeys(folder / 'pending-resets.json'), MobileQuotaSync(folder / 'mobile-pairing.json'))
-        self.mobile_code = ''
+        self.worker = Worker(self.events, PendingKeys(folder / 'pending-resets.json'))
         if not demo:
             self.worker.start()
         self.state = None
@@ -330,8 +325,6 @@ class Island(QWidget):
                 self.busy = False
                 if self.message == '正在连接…':
                     self.message = '已连接 · 每 45 秒刷新'
-            elif kind == 'pair':
-                self.mobile_code = value
             else:
                 self.message = value
                 if kind == 'error':
