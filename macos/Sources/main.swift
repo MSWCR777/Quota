@@ -30,6 +30,16 @@ struct QuotaWindow: Equatable {
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 }
 
+struct ResetCredit: Equatable, Identifiable {
+    let id: String
+    let status: String
+    let grantedAt: Date
+    let expiresAt: Date?
+    let title: String?
+
+    var displayTitle: String { "全量重置（5小时＋7天）" }
+}
+
 struct QuotaSnapshot: Equatable {
     let accountID: String?
     let authStamp: String
@@ -37,7 +47,66 @@ struct QuotaSnapshot: Equatable {
     let secondary: QuotaWindow?
     let planType: String?
     let resetCredits: Int?
+    let resetCreditItems: [ResetCredit]
     let updatedAt: Date
+}
+
+final class MobileQuotaSync {
+    private let site = URL(string: "https://quota-mobile.black-trout-2440.chatgpt.site")!
+    private let queue = DispatchQueue(label: "app.quota.mobile-sync")
+    private let defaults = UserDefaults.standard
+    var onPairCode: ((String) -> Void)?
+
+    func sync(_ snapshot: QuotaSnapshot) {
+        queue.async { [weak self] in self?.performSync(snapshot) }
+    }
+
+    private func performSync(_ snapshot: QuotaSnapshot) {
+        var code = defaults.string(forKey: "mobile.code")
+        var token = defaults.string(forKey: "mobile.token")
+        let expires = defaults.double(forKey: "mobile.expires")
+        if code == nil || token == nil || expires < Date().timeIntervalSince1970 * 1000 + 86_400_000,
+           let pairing = request(path: "/api/pair", body: [:], token: nil),
+           let newCode = pairing["code"] as? String,
+           let newToken = pairing["writeToken"] as? String,
+           let newExpires = pairing["expiresAt"] as? NSNumber {
+            code = newCode; token = newToken
+            defaults.set(newCode, forKey: "mobile.code")
+            defaults.set(newToken, forKey: "mobile.token")
+            defaults.set(newExpires.doubleValue, forKey: "mobile.expires")
+        }
+        guard let code, let token else { return }
+        DispatchQueue.main.async { [weak self] in self?.onPairCode?(code) }
+        let windows = [snapshot.primary, snapshot.secondary].compactMap { window -> [String: Any]? in
+            guard let window else { return nil }
+            let remaining = max(0, Int(window.resetsAt.timeIntervalSinceNow))
+            let reset = window.durationMinutes >= 1440
+                ? "\(remaining / 86_400) 天 \((remaining % 86_400) / 3_600) 小时后恢复"
+                : "\(remaining / 3_600) 小时 \((remaining % 3_600) / 60) 分后恢复"
+            return ["label": window.durationMinutes >= 1440 ? "\(window.durationMinutes / 1440) 天" : "\(window.durationMinutes / 60) 小时",
+                    "remaining": window.remainingPercent, "resetLabel": reset]
+        }
+        _ = request(path: "/api/sync", body: ["windows": windows, "plan": snapshot.planType ?? ""], token: token)
+    }
+
+    private func request(path: String, body: [String: Any], token: String?) -> [String: Any]? {
+        var request = URLRequest(url: site.appendingPathComponent(path))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Quota-Desktop/1.0", forHTTPHeaderField: "User-Agent")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: [String: Any]?
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data else { return }
+            result = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }.resume()
+        _ = semaphore.wait(timeout: .now() + 22)
+        return result
+    }
 }
 
 @MainActor
@@ -53,14 +122,21 @@ final class QuotaStore: ObservableObject {
     @Published var resetBusy = false
     @Published var resetMessage = ""
     @Published var confirmingReset = false
+    @Published var mobilePairCode = ""
+    @Published var selectedCreditID: String?
 
     var canReset: Bool {
-        snapshot?.accountID != nil && (snapshot?.resetCredits ?? 0) > 0 && !resetBusy && status == .connected
+        snapshot?.accountID != nil && selectedCredit != nil && !resetBusy && status == .connected
+    }
+
+    var selectedCredit: ResetCredit? {
+        guard let id = selectedCreditID else { return snapshot?.resetCreditItems.first }
+        return snapshot?.resetCreditItems.first(where: { $0.id == id }) ?? snapshot?.resetCreditItems.first
     }
 
     func confirmReset() {
         confirmingReset = false
-        guard canReset, let snapshot, let account = snapshot.accountID else { return }
+        guard canReset, let snapshot, let account = snapshot.accountID, let credit = selectedCredit else { return }
         guard snapshot.authStamp == currentCredentialStamp() else {
             resetMessage = "登录状态已变化，请等待新账号额度加载后重试。"
             start()
@@ -68,13 +144,13 @@ final class QuotaStore: ObservableObject {
         }
         // Persist one pending key per account. An uncertain response or restart
         // must never turn a retry into a second redemption.
-        let storageKey = "pending-reset." + account
+        let storageKey = "pending-reset." + account + "." + credit.id
         let key = UserDefaults.standard.string(forKey: storageKey) ?? UUID().uuidString
         UserDefaults.standard.set(key, forKey: storageKey)
         resetBusy = true
         resetMessage = "正在使用重置卡…"
         let currentSession = session
-        service.consumeReset(key: key, expectedStamp: snapshot.authStamp) { [weak self] outcome in
+        service.consumeReset(key: key, creditID: credit.id, expectedStamp: snapshot.authStamp) { [weak self] outcome in
             Task { @MainActor in
                 if ["reset", "alreadyRedeemed", "nothingToReset", "noCredit"].contains(outcome) {
                     UserDefaults.standard.removeObject(forKey: storageKey)
@@ -88,6 +164,7 @@ final class QuotaStore: ObservableObject {
     }
 
     private var service = CodexQuotaService()
+    private let mobileSync = MobileQuotaSync()
     private var pollTimer: Timer?
     private var session = UUID()
 
@@ -98,11 +175,17 @@ final class QuotaStore: ObservableObject {
         snapshot = nil
         resetMessage = ""
         status = .loading
+        mobileSync.onPairCode = { [weak self] code in self?.mobilePairCode = code }
         service.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
                 guard self?.session == currentSession else { return }
                 self?.snapshot = snapshot
+                let available = snapshot.resetCreditItems
+                if self?.selectedCreditID == nil || !available.contains(where: { $0.id == self?.selectedCreditID }) {
+                    self?.selectedCreditID = available.first?.id
+                }
                 self?.status = .connected
+                self?.mobileSync.sync(snapshot)
             }
         }
         service.onError = { [weak self] message in
@@ -159,7 +242,7 @@ final class CodexQuotaService {
         self.testExecutable = testExecutable
     }
 
-    func consumeReset(key: String, expectedStamp: String, completion: @escaping (String) -> Void) {
+    func consumeReset(key: String, creditID: String, expectedStamp: String, completion: @escaping (String) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
             guard !self.stopped, self.process?.isRunning == true, self.pendingReset == nil,
@@ -171,7 +254,7 @@ final class CodexQuotaService {
             self.nextRequestID += 1
             self.pendingReset = (id, completion)
             self.send(["method": "account/rateLimitResetCredit/consume", "id": id,
-                       "params": ["idempotencyKey": key]])
+                       "params": ["idempotencyKey": key, "creditId": creditID]])
             self.queue.asyncAfter(deadline: .now() + 25) { [weak self] in
                 guard let self, self.pendingReset?.id == id else { return }
                 self.completeReset("uncertain")
@@ -371,6 +454,15 @@ final class CodexQuotaService {
         let creditsContainer = payload["rateLimitResetCredits"] as? [String: Any]
         let accountID = payload["accountId"] as? String
         let returnedCredits = number(creditsContainer?["availableCount"]).map(Int.init)
+        let creditItems = (creditsContainer?["credits"] as? [[String: Any]] ?? []).compactMap { item -> ResetCredit? in
+            guard let id = item["id"] as? String,
+                  let status = item["status"] as? String,
+                  status == "available",
+                  let granted = number(item["grantedAt"]) else { return nil }
+            let expires = number(item["expiresAt"]).map { Date(timeIntervalSince1970: $0) }
+            return ResetCredit(id: id, status: status, grantedAt: Date(timeIntervalSince1970: granted),
+                               expiresAt: expires, title: item["title"] as? String)
+        }.sorted { ($0.expiresAt ?? .distantFuture) < ($1.expiresAt ?? .distantFuture) }
         if let accountID, let returnedCredits { knownCredits[accountID] = returnedCredits }
         let credits = returnedCredits ?? accountID.flatMap { knownCredits[$0] }
         let snapshot = QuotaSnapshot(
@@ -380,6 +472,7 @@ final class CodexQuotaService {
             secondary: secondary,
             planType: bucket["planType"] as? String,
             resetCredits: credits,
+            resetCreditItems: creditItems,
             updatedAt: Date()
         )
         let callback = onSnapshot
@@ -568,23 +661,39 @@ struct IslandAtmosphere: View {
 
     var body: some View {
         ZStack {
-            Color(white: 0.045)
-            LinearGradient(colors: [Color(red: 0.07, green: 0.14, blue: 0.10).opacity(0.60), .clear, Color(red: 0.05, green: 0.10, blue: 0.08).opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Color(red: 0.018, green: 0.033, blue: 0.025)
+            LinearGradient(colors: [Color(red: 0.09, green: 0.20, blue: 0.14).opacity(0.78), Color(red: 0.025, green: 0.050, blue: 0.038), Color(red: 0.07, green: 0.14, blue: 0.10).opacity(0.62)], startPoint: .topLeading, endPoint: .bottomTrailing)
             TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { timeline in
                 Canvas { context, size in
                     let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-                    for index in 0..<14 {
+
+                    let drift = (sin(time * 0.27) + 1) / 2
+                    let glowCenter = CGPoint(x: size.width * (0.12 + drift * 0.68), y: size.height * (0.10 + 0.12 * cos(time * 0.31)))
+                    let glowRadius = max(70, min(size.width, size.height) * 0.72)
+                    context.fill(Path(ellipseIn: CGRect(x: glowCenter.x - glowRadius, y: glowCenter.y - glowRadius * 0.68, width: glowRadius * 2, height: glowRadius * 1.36)),
+                                 with: .radialGradient(Gradient(colors: [Color(red: 0.34, green: 0.88, blue: 0.59).opacity(0.16), .clear]), center: glowCenter, startRadius: 0, endRadius: glowRadius))
+
+                    let secondary = CGPoint(x: size.width * (0.86 - drift * 0.34), y: size.height * 0.88)
+                    context.fill(Path(ellipseIn: CGRect(x: secondary.x - glowRadius * 0.72, y: secondary.y - glowRadius * 0.55, width: glowRadius * 1.44, height: glowRadius * 1.1)),
+                                 with: .radialGradient(Gradient(colors: [Color(red: 0.16, green: 0.48, blue: 0.32).opacity(0.13), .clear]), center: secondary, startRadius: 0, endRadius: glowRadius * 0.72))
+
+                    for index in 0..<20 {
                         let seed = Double(index)
-                        let x = (seed * 0.618 + time * 0.008).truncatingRemainder(dividingBy: 1) * size.width
-                        // Keep particles near the perimeter, away from the text.
-                        let edge = 2 + (sin(time * 0.55 + seed * 2.3) + 1) * 2
-                        let y = index.isMultiple(of: 2) ? edge : size.height - edge
+                        let x = (seed * 0.618 + time * (0.005 + seed.truncatingRemainder(dividingBy: 4) * 0.001)).truncatingRemainder(dividingBy: 1) * size.width
+                        let edge = 2 + (sin(time * 0.55 + seed * 2.3) + 1) * min(5, size.height * 0.04)
+                        let y = size.height < 80 ? (index.isMultiple(of: 2) ? edge : size.height - edge) : (seed * 47 + time * 1.2).truncatingRemainder(dividingBy: Double(size.height))
                         let radius = index.isMultiple(of: 3) ? 1.2 : 0.7
-                        let alpha = 0.22 + 0.18 * (sin(time * 0.8 + seed) + 1) / 2
+                        let alpha = 0.18 + 0.20 * (sin(time * 0.8 + seed) + 1) / 2
                         let dot = CGRect(x: x, y: y, width: radius * 2, height: radius * 2)
                         context.fill(Path(ellipseIn: dot.insetBy(dx: -2, dy: -2)), with: .color(Color(red: 0.61, green: 0.79, blue: 0.65).opacity(alpha * 0.12)))
                         context.fill(Path(ellipseIn: dot), with: .color(Color(red: 0.73, green: 0.86, blue: 0.75).opacity(alpha)))
                     }
+
+                    let sweep = (time.truncatingRemainder(dividingBy: 7) / 7) * (size.width + 180) - 90
+                    context.stroke(Path { path in
+                        path.move(to: CGPoint(x: sweep, y: 0))
+                        path.addLine(to: CGPoint(x: sweep - max(35, size.height * 0.24), y: size.height))
+                    }, with: .linearGradient(Gradient(colors: [.clear, .white.opacity(0.075), .clear]), startPoint: CGPoint(x: sweep, y: 0), endPoint: CGPoint(x: sweep - max(35, size.height * 0.24), y: size.height)), lineWidth: size.height < 80 ? 18 : 42)
                 }
             }
         }
@@ -696,25 +805,19 @@ struct ExpandedIslandView: View {
                 Rectangle().fill(.white.opacity(0.12)).frame(height: 0.5)
                     .padding(.horizontal, 24).padding(.top, 12)
                 VStack(alignment: .leading, spacing: 7) {
-                    if store.confirmingReset {
-                        Text("确认使用当前账号的 1 张重置卡？")
-                            .font(.system(size: 11, weight: .semibold))
-                        HStack {
-                            Button("取消") { store.confirmingReset = false }
-                            Spacer()
-                            Button("确认使用 1 张") { store.confirmReset() }
-                                .disabled(!store.canReset)
+                    HStack(spacing: 8) {
+                        Text(store.snapshot?.resetCredits.map { "重置卡 · \($0) 张" } ?? "重置卡 · 暂未返回数量")
+                            .font(.system(size: 10))
+                        Spacer()
+                        Button(store.resetBusy ? "处理中…" : "使用重置卡") {
+                            store.confirmingReset = true
                         }
-                    } else {
-                        HStack {
-                            Text(store.snapshot?.resetCredits.map { "重置卡 · \($0) 张" } ?? "重置卡 · 暂未返回数量")
-                                .font(.system(size: 11))
-                            Spacer()
-                            Button(store.resetBusy ? "处理中…" : "使用重置卡") {
-                                store.confirmingReset = true
-                            }
-                            .disabled(!store.canReset)
-                        }
+                        .disabled(!store.canReset)
+                    }
+                    if store.selectedCredit == nil && (store.snapshot?.resetCredits ?? 0) > 0 {
+                        Text("服务未返回每张卡的明细，暂时无法安全选择。")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange.opacity(0.75))
                     }
                     if !store.resetMessage.isEmpty && !store.confirmingReset {
                         Text(store.resetMessage)
@@ -729,25 +832,26 @@ struct ExpandedIslandView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 12)
 
-                Spacer().frame(height: 10)
-
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(store.snapshot == nil ? Color.orange : Color.green)
-                            .frame(width: 5, height: 5)
-                        Text(footerText)
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.42))
+                if !store.confirmingReset {
+                    Spacer().frame(height: 10)
+                    HStack {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(store.snapshot == nil ? Color.orange : Color.green)
+                                .frame(width: 5, height: 5)
+                            Text(footerText)
+                                .font(.system(size: 9, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+                        Spacer()
+                        Button("退出") { NSApplication.shared.terminate(nil) }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.48))
                     }
-                    Spacer()
-                    Button("退出") { NSApplication.shared.terminate(nil) }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.48))
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 14)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 14)
             }
             .opacity(reduceMotion || appeared ? 1 : 0)
             .offset(y: reduceMotion || appeared ? 0 : 4)
@@ -766,6 +870,9 @@ struct ExpandedIslandView: View {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
                 appeared = true
             }
+        }
+        .sheet(isPresented: $store.confirmingReset) {
+            ResetCreditSheet(store: store)
         }
     }
 
@@ -810,6 +917,188 @@ struct ExpandedIslandView: View {
         if let credits = snapshot.resetCredits { parts.append("重置券 \(credits)") }
         parts.append("更新于 \(snapshot.updatedAt.formatted(date: .omitted, time: .shortened))")
         return parts.joined(separator: " · ")
+    }
+}
+
+struct ResetCreditSheet: View {
+    @ObservedObject var store: QuotaStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var cancelHovering = false
+    @State private var confirmHovering = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("选择重置卡")
+                            .font(.system(size: 21, weight: .semibold))
+                        Text("将同时恢复 5 小时和 7 天额度")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.48))
+                    }
+                    Spacer()
+                    Button { store.refresh() } label: {
+                        Image(systemName: "arrow.counterclockwise.circle.fill")
+                            .font(.system(size: 27))
+                            .foregroundStyle(Color(red: 0.55, green: 0.88, blue: 0.68))
+                    }
+                    .buttonStyle(.plain)
+                    .help("重新读取重置卡")
+                }
+
+                ScrollView {
+                    VStack(spacing: 9) {
+                        if store.snapshot?.resetCreditItems.isEmpty != false {
+                            VStack(spacing: 9) {
+                                ProgressView().controlSize(.small).tint(.white)
+                                Text("正在读取重置卡明细…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.white.opacity(0.48))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 92)
+                        }
+                        ForEach(Array((store.snapshot?.resetCreditItems ?? []).enumerated()), id: \.element.id) { index, credit in
+                        let selected = store.selectedCredit?.id == credit.id
+                        Button {
+                            store.selectedCreditID = credit.id
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle().fill(selected ? Color(red: 0.55, green: 0.88, blue: 0.68) : .white.opacity(0.08))
+                                    Image(systemName: selected ? "checkmark" : "creditcard")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(selected ? Color.black : .white.opacity(0.55))
+                                }
+                                .frame(width: 26, height: 26)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("第 \(index + 1) 张 · 全量重置")
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text(creditValidity(credit, now: context.date))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(selected ? .white.opacity(0.72) : .white.opacity(0.42))
+                                }
+                                Spacer()
+                                Text(creditRemainingBadge(credit, now: context.date))
+                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .background(Capsule().fill(selected ? Color(red: 0.55, green: 0.88, blue: 0.68).opacity(0.16) : .white.opacity(0.05)))
+                                    .foregroundStyle(selected ? Color(red: 0.65, green: 0.94, blue: 0.75) : .white.opacity(0.42))
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 58)
+                            .background(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .fill(selected ? Color(red: 0.13, green: 0.24, blue: 0.17) : .white.opacity(0.035)))
+                            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .strokeBorder(selected ? Color(red: 0.55, green: 0.88, blue: 0.68).opacity(0.38) : .white.opacity(0.07), lineWidth: 0.8))
+                        }
+                        .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 226)
+
+                HStack(spacing: 10) {
+                    Button { dismiss() } label: {
+                        Text("取消")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                        .buttonStyle(ResetDialogButtonStyle(primary: false, hovering: cancelHovering))
+                        .frame(maxWidth: .infinity).frame(height: 38)
+                        .contentShape(RoundedRectangle(cornerRadius: 12))
+                        .onHover { cancelHovering = $0 }
+                    Button { store.confirmReset() } label: {
+                        Text(store.resetBusy ? "正在使用…" : "确认使用所选卡")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                        .buttonStyle(ResetDialogButtonStyle(primary: true, hovering: confirmHovering))
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 38)
+                        .contentShape(RoundedRectangle(cornerRadius: 12))
+                        .onHover { confirmHovering = $0 }
+                        .disabled(!store.canReset)
+                }
+            }
+            .padding(22)
+            .frame(width: 360, height: 390, alignment: .top)
+            .foregroundStyle(.white)
+            .background {
+                ResetDialogAtmosphere(paused: reduceMotion)
+            }
+        }
+    }
+}
+
+struct ResetDialogAtmosphere: View {
+    let paused: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: paused)) { timeline in
+            let time = paused ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            Canvas { context, size in
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .linearGradient(
+                    Gradient(colors: [
+                        Color(red: 0.025, green: 0.050, blue: 0.039),
+                        Color(red: 0.040, green: 0.075, blue: 0.057),
+                        Color(red: 0.020, green: 0.031, blue: 0.026)
+                    ]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: size.height)))
+
+                let drift = (sin(time * 0.32) + 1) / 2
+                let glowCenter = CGPoint(x: size.width * (0.20 + 0.52 * drift), y: size.height * (0.08 + 0.10 * cos(time * 0.24)))
+                context.fill(Path(ellipseIn: CGRect(x: glowCenter.x - 145, y: glowCenter.y - 120, width: 290, height: 240)),
+                             with: .radialGradient(Gradient(colors: [Color(red: 0.36, green: 0.88, blue: 0.61).opacity(0.18), .clear]),
+                                                   center: glowCenter, startRadius: 0, endRadius: 145))
+
+                for index in 0..<18 {
+                    let seed = Double(index)
+                    let x = (seed * 37.7 + time * (2.0 + seed.truncatingRemainder(dividingBy: 3))).truncatingRemainder(dividingBy: Double(size.width + 30)) - 15
+                    let y = 18 + (seed * 53.0).truncatingRemainder(dividingBy: Double(max(40, size.height - 36))) + sin(time * 0.5 + seed) * 5
+                    let radius = index.isMultiple(of: 4) ? 1.25 : 0.7
+                    let alpha = 0.16 + 0.16 * (sin(time * 0.7 + seed * 1.7) + 1) / 2
+                    context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: radius * 2, height: radius * 2)),
+                                 with: .color(Color(red: 0.65, green: 0.96, blue: 0.76).opacity(alpha)))
+                }
+
+                let sweep = (time.truncatingRemainder(dividingBy: 6) / 6) * (size.width + 160) - 80
+                context.stroke(Path { path in
+                    path.move(to: CGPoint(x: sweep, y: 0))
+                    path.addLine(to: CGPoint(x: sweep - 95, y: size.height))
+                }, with: .linearGradient(Gradient(colors: [.clear, .white.opacity(0.10), .clear]),
+                                         startPoint: CGPoint(x: sweep, y: 0), endPoint: CGPoint(x: sweep - 95, y: size.height)), lineWidth: 34)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 19, style: .continuous)
+                .strokeBorder(LinearGradient(colors: [Color(red: 0.55, green: 0.92, blue: 0.68).opacity(0.30), .white.opacity(0.07), Color(red: 0.24, green: 0.56, blue: 0.39).opacity(0.18)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.8)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+struct ResetDialogButtonStyle: ButtonStyle {
+    let primary: Bool
+    let hovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(primary ? Color.black : Color.white)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(primary
+                          ? Color(red: 0.55, green: 0.88, blue: 0.68).opacity(configuration.isPressed ? 0.68 : hovering ? 1.0 : 0.90)
+                          : Color.white.opacity(configuration.isPressed ? 0.16 : hovering ? 0.11 : 0.07))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.white.opacity(configuration.isPressed ? 0.18 : 0.04), lineWidth: 0.7)
+            }
+            .scaleEffect(configuration.isPressed ? 0.965 : hovering ? 1.01 : 1)
+            .animation(.easeOut(duration: 0.11), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.14), value: hovering)
     }
 }
 
@@ -912,6 +1201,18 @@ func resetText(_ date: Date, now: Date) -> String {
     if days > 0 { return "\(days)天 \(hours)小时" }
     if hours > 0 { return "\(hours)小时 \(minutes)分 \(seconds)秒" }
     return String(format: "%02d:%02d", minutes, seconds)
+}
+
+func creditValidity(_ credit: ResetCredit, now: Date) -> String {
+    guard let expiry = credit.expiresAt else { return "长期有效" }
+    let days = max(0, Int(ceil(expiry.timeIntervalSince(now) / 86_400)))
+    let absolute = expiry.formatted(.dateTime.month().day().hour().minute().locale(Locale(identifier: "zh_CN")))
+    return "有效期至 \(absolute)（剩余 \(days) 天）"
+}
+
+func creditRemainingBadge(_ credit: ResetCredit, now: Date) -> String {
+    guard let expiry = credit.expiresAt else { return "长期有效" }
+    return "剩 \(max(0, Int(ceil(expiry.timeIntervalSince(now) / 86_400)))) 天"
 }
 
 final class IslandPanel: NSPanel {
@@ -1117,20 +1418,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var syncTimer: Timer?
     private var syncState = SyncState()
 
+    private func hasVisibleWindow(_ application: NSRunningApplication) -> Bool {
+        guard !application.isHidden else { return false }
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return true
+        }
+        return windows.contains { window in
+            guard let owner = window[kCGWindowOwnerPID as String] as? NSNumber,
+                  owner.int32Value == application.processIdentifier,
+                  let layer = window[kCGWindowLayer as String] as? NSNumber,
+                  layer.intValue == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? NSNumber,
+                  let height = bounds["Height"] as? NSNumber else { return false }
+            return width.doubleValue > 120 && height.doubleValue > 80
+        }
+    }
+
     @objc private func synchronize() {
-        let running = NSWorkspace.shared.runningApplications.contains {
+        let host = NSWorkspace.shared.runningApplications.first {
             $0.bundleIdentifier == "com.openai.codex" && !$0.isTerminated
         }
+        let running = host != nil
+        let visible = host.map(hasVisibleWindow) ?? false
         let action = syncState.update(running: running, stamp: currentCredentialStamp())
         switch action {
         case .start, .reload:
             store?.start()
-            islandController?.setVisible(true)
+            islandController?.setVisible(visible)
         case .stop:
             islandController?.setVisible(false)
             store?.stop()
         case .none:
-            break
+            islandController?.setVisible(visible)
         }
     }
 
@@ -1140,11 +1461,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.store = store
         islandController = IslandWindowController(store: store)
         let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didWakeNotification] {
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification,
+                     NSWorkspace.didWakeNotification] {
             center.addObserver(self, selector: #selector(synchronize), name: name, object: nil)
         }
         synchronize()
-        let timer = Timer(timeInterval: 2, target: self, selector: #selector(synchronize), userInfo: nil, repeats: true)
+        // Window minimization has no NSWorkspace notification. A short, cheap
+        // window-list poll keeps the island visually attached to Codex without
+        // requiring Accessibility permission.
+        let timer = Timer(timeInterval: 0.2, target: self, selector: #selector(synchronize), userInfo: nil, repeats: true)
         RunLoop.main.add(timer, forMode: .common)
         syncTimer = timer
     }

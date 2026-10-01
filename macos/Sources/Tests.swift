@@ -14,10 +14,15 @@ enum IslandTests {
                 result = ["accountId": "test-account", "rateLimits": [
                     "primary": ["usedPercent": 40, "windowDurationMins": 300, "resetsAt": 1900000000],
                     "secondary": ["usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1900100000],
-                    "planType": "test"] as [String: Any], "rateLimitResetCredits": ["availableCount": 2]]
+                    "planType": "test"] as [String: Any], "rateLimitResetCredits": ["availableCount": 2, "credits": [[
+                        "id": "credit-test", "status": "available", "resetType": "codexRateLimits",
+                        "grantedAt": 1_890_000_000, "expiresAt": 1_900_000_000,
+                        "title": "Full reset (Weekly + 5 hr)"
+                    ]]]]
             case "account/rateLimitResetCredit/consume":
                 let params = request["params"] as! [String: Any]
                 let key = params["idempotencyKey"] as! String
+                guard params["creditId"] as? String == "credit-test" else { continue }
                 if key == "timeout" { continue }
                 let outcome: String
                 if key == "empty" { outcome = "noCredit" }
@@ -42,7 +47,7 @@ enum IslandTests {
         func next() {
             if index == cases.count { complete = true; return }
             let item = cases[index]
-            service.consumeReset(key: item.0, expectedStamp: currentCredentialStamp()) { outcome in
+            service.consumeReset(key: item.0, creditID: "credit-test", expectedStamp: currentCredentialStamp()) { outcome in
                 precondition(outcome == item.1, "Unexpected reset outcome: \(outcome)")
                 index += 1
                 next()
@@ -53,9 +58,11 @@ enum IslandTests {
             precondition(snapshot.accountID == "test-account")
             precondition(snapshot.primary?.remainingPercent == 60)
             precondition(snapshot.resetCredits == 2)
+            precondition(snapshot.resetCreditItems.count == 1)
+            precondition(snapshot.resetCreditItems.first?.id == "credit-test")
             guard !started else { return }
             started = true
-            service.consumeReset(key: "never-send", expectedStamp: "stale-account") { outcome in
+            service.consumeReset(key: "never-send", creditID: "credit-test", expectedStamp: "stale-account") { outcome in
                 precondition(outcome == "uncertain")
                 next()
             }
