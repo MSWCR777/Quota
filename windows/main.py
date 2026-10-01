@@ -1,5 +1,6 @@
 """Quota Windows desktop edition. Run --demo for a credential-free preview."""
 import math
+import ntpath
 import os
 from pathlib import Path
 import queue
@@ -54,6 +55,17 @@ def notify_existing_instance():
     socket.waitForBytesWritten(500)
     socket.disconnectFromServer()
     return True
+
+
+def is_host_process(name, executable='', command_line=None):
+    """Recognize old and new ChatGPT/Codex desktop process layouts."""
+    name = (name or '').lower()
+    executable = (executable or '').lower()
+    command = ' '.join(command_line or []).lower()
+    if 'app-server' in command or 'exec-server' in command:
+        return False
+    identity = ' '.join((name, ntpath.basename(executable).lower()))
+    return any(token in identity for token in ('chatgpt', 'codex'))
 
 
 class Worker(threading.Thread):
@@ -117,9 +129,8 @@ def host_running():
     desktop_pids = set()
     for process in psutil.process_iter(['name', 'exe', 'cmdline']):
         try:
-            name = (process.info['name'] or '').lower()
             # Desktop UI processes only; never count the child CLI app-server.
-            if name in ('codex.exe', 'chatgpt.exe') and 'app-server' not in (process.info['cmdline'] or []) and 'resources' not in (process.info['exe'] or '').lower():
+            if is_host_process(process.info['name'], process.info['exe'], process.info['cmdline']):
                 desktop_pids.add(process.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -135,8 +146,9 @@ def host_running():
     def inspect(hwnd, _):
         pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        title_length = user32.GetWindowTextLengthW(hwnd)
         if (pid.value in desktop_pids and user32.IsWindowVisible(hwnd)
-                and not user32.IsIconic(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0):
+                and not user32.IsIconic(hwnd) and title_length > 0):
             visible.value = True
             return False
         return True
@@ -281,6 +293,7 @@ class Island(QWidget):
 
     def set_motion(self, enabled):
         self.motion = enabled
+        self.update()
 
     def reveal(self):
         """Bring the existing instance into the user's current desktop session."""
@@ -341,17 +354,41 @@ class Island(QWidget):
         p.setClipPath(boundary)
         background = QLinearGradient(0,0,self.width(),self.height())
         background.setColorAt(0, QColor('#101d17'))
+        background.setColorAt(.52, QColor('#10291f'))
         background.setColorAt(1, QColor('#0b0e0c'))
         p.fillPath(boundary, background)
-        p.setPen(QColor('#395146'))
-        p.drawPath(boundary)
         t = time.time() if self.motion else 0
-        for i in range(12):
-            x = ((i*.618+t*.008)%1)*self.width()
-            y = 3+math.sin(t*.55+i)*1.5 if i%2 else self.height()-4
+
+        # Broad, slow-moving light fields remain visible without becoming busy.
+        phase = (math.sin(t * .42) + 1) / 2 if self.motion else .35
+        glow = QLinearGradient(self.width() * (phase - .45), 0,
+                               self.width() * (phase + .55), self.height())
+        glow.setColorAt(0, QColor(68, 190, 126, 0))
+        glow.setColorAt(.5, QColor(82, 220, 151, 34 if self.expanded else 25))
+        glow.setColorAt(1, QColor(68, 190, 126, 0))
+        p.fillPath(boundary, glow)
+
+        beam_x = -self.width() * .45 + (self.width() * 1.9) * ((t % 8) / 8) if self.motion else -99
+        beam = QPainterPath()
+        beam.moveTo(beam_x, -20)
+        beam.lineTo(beam_x + 42, -20)
+        beam.lineTo(beam_x - 20, self.height() + 20)
+        beam.lineTo(beam_x - 62, self.height() + 20)
+        beam.closeSubpath()
+        p.fillPath(beam, QColor(150, 255, 195, 13))
+
+        for i in range(18 if self.expanded else 10):
+            x = ((i * .618 + t * (.012 + (i % 3) * .004)) % 1) * self.width()
+            lane = ((i * 37) % 91) / 100
+            y = 5 + lane * max(1, self.height() - 10) + math.sin(t * .7 + i) * 2
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(175,220,186,85))
-            p.drawEllipse(QPointF(x,y), .8,.8)
+            p.setBrush(QColor(178, 239, 198, 55 + (i % 4) * 14))
+            radius = .65 + (i % 3) * .28
+            p.drawEllipse(QPointF(x,y), radius, radius)
+
+        p.setPen(QColor('#395146'))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(boundary)
         def text(x,y,s,size=10,color='#eeeeee',weight=QFont.Weight.Normal):
             p.setPen(QColor(color))
             p.setFont(ui_font(size, weight))
