@@ -64,14 +64,17 @@ $env:QUOTANOOK_ALWAYS_SHOW = '1'
 找不到 CLI 时，设置 `QUOTANOOK_CODEX` 为原生 `codex.exe` 的完整路径。
 不接受 `.cmd` / `.bat` 包装器；npm 安装目录中的原生可执行文件会自动搜索。
 用系统 Python 安装依赖后，运行 `windows/build.ps1` 可生成 `dist/Quota/Quota.exe`。
-分发时保留整个目录，包括 Qt 库和许可证。可将 exe 的快捷方式放入 `shell:startup` 实现登录启动。
+分发时保留整个目录，包括 Qt 库和许可证。构建包内双击 `安装并启动Quota.bat`，
+即可创建当前用户的启动项并立即运行。Quota 登录 Windows 后在后台待命，ChatGPT/Codex
+打开或还原时显示，关闭或最小化时隐藏。重复启动会唤醒当前桌面会话里的窗口；测试或
+隔离会话中的实例不会阻止桌面版启动。
 
 无账号效果预览：`python windows/main.py --demo`。
 
 ### 手机额度胶囊
 
-桌面端成功读取额度后会显示 6 位“手机码”。在手机打开
-[Quota Mobile](https://quota-mobile.black-trout-2440.chatgpt.site)，输入一次即可长期配对。
+桌面端会在后台维护手机同步；为保持界面简洁，Windows 浮窗不显示手机配对码。
+[Quota Mobile](https://quota-mobile.black-trout-2440.chatgpt.site) 会保留最近一次已经建立的配对。
 电脑端 Quota 在线时每次额度刷新都会自动同步；电脑休眠、断网或退出后，手机会显示离线和最后更新时间。
 切换 Codex 账号后，下一次桌面刷新会同步新账号数据。
 
