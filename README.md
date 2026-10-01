@@ -2,7 +2,7 @@
 
 **简洁、实时的 Codex 额度浮窗。**
 
-![Quota desktop quota island](assets/hero.jpg)
+![Quota desktop quota island — expanded and compact views](assets/hero.png)
 
 A tiny floating nook for your Codex quota. macOS + Windows.
 
