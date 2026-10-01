@@ -51,64 +51,6 @@ struct QuotaSnapshot: Equatable {
     let updatedAt: Date
 }
 
-final class MobileQuotaSync {
-    private let site = URL(string: "https://quota-mobile.black-trout-2440.chatgpt.site")!
-    private let queue = DispatchQueue(label: "app.quota.mobile-sync")
-    private let defaults = UserDefaults.standard
-    var onPairCode: ((String) -> Void)?
-
-    func sync(_ snapshot: QuotaSnapshot) {
-        queue.async { [weak self] in self?.performSync(snapshot) }
-    }
-
-    private func performSync(_ snapshot: QuotaSnapshot) {
-        var code = defaults.string(forKey: "mobile.code")
-        var token = defaults.string(forKey: "mobile.token")
-        let expires = defaults.double(forKey: "mobile.expires")
-        if code == nil || token == nil || expires < Date().timeIntervalSince1970 * 1000 + 86_400_000,
-           let pairing = request(path: "/api/pair", body: [:], token: nil),
-           let newCode = pairing["code"] as? String,
-           let newToken = pairing["writeToken"] as? String,
-           let newExpires = pairing["expiresAt"] as? NSNumber {
-            code = newCode; token = newToken
-            defaults.set(newCode, forKey: "mobile.code")
-            defaults.set(newToken, forKey: "mobile.token")
-            defaults.set(newExpires.doubleValue, forKey: "mobile.expires")
-        }
-        guard let code, let token else { return }
-        DispatchQueue.main.async { [weak self] in self?.onPairCode?(code) }
-        let windows = [snapshot.primary, snapshot.secondary].compactMap { window -> [String: Any]? in
-            guard let window else { return nil }
-            let remaining = max(0, Int(window.resetsAt.timeIntervalSinceNow))
-            let reset = window.durationMinutes >= 1440
-                ? "\(remaining / 86_400) 天 \((remaining % 86_400) / 3_600) 小时后恢复"
-                : "\(remaining / 3_600) 小时 \((remaining % 3_600) / 60) 分后恢复"
-            return ["label": window.durationMinutes >= 1440 ? "\(window.durationMinutes / 1440) 天" : "\(window.durationMinutes / 60) 小时",
-                    "remaining": window.remainingPercent, "resetLabel": reset]
-        }
-        _ = request(path: "/api/sync", body: ["windows": windows, "plan": snapshot.planType ?? ""], token: token)
-    }
-
-    private func request(path: String, body: [String: Any], token: String?) -> [String: Any]? {
-        var request = URLRequest(url: site.appendingPathComponent(path))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 20
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Quota-Desktop/1.0", forHTTPHeaderField: "User-Agent")
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: [String: Any]?
-        URLSession.shared.dataTask(with: request) { data, response, _ in
-            defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data else { return }
-            result = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 22)
-        return result
-    }
-}
-
 @MainActor
 final class QuotaStore: ObservableObject {
     enum Status: Equatable {
@@ -122,7 +64,6 @@ final class QuotaStore: ObservableObject {
     @Published var resetBusy = false
     @Published var resetMessage = ""
     @Published var confirmingReset = false
-    @Published var mobilePairCode = ""
     @Published var selectedCreditID: String?
 
     var canReset: Bool {
@@ -164,7 +105,6 @@ final class QuotaStore: ObservableObject {
     }
 
     private var service = CodexQuotaService()
-    private let mobileSync = MobileQuotaSync()
     private var pollTimer: Timer?
     private var session = UUID()
 
@@ -175,7 +115,6 @@ final class QuotaStore: ObservableObject {
         snapshot = nil
         resetMessage = ""
         status = .loading
-        mobileSync.onPairCode = { [weak self] code in self?.mobilePairCode = code }
         service.onSnapshot = { [weak self] snapshot in
             Task { @MainActor in
                 guard self?.session == currentSession else { return }
@@ -185,7 +124,6 @@ final class QuotaStore: ObservableObject {
                     self?.selectedCreditID = available.first?.id
                 }
                 self?.status = .connected
-                self?.mobileSync.sync(snapshot)
             }
         }
         service.onError = { [weak self] message in
