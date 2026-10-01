@@ -10,6 +10,52 @@ import subprocess
 import threading
 import time
 import uuid
+import urllib.request
+
+MOBILE_SITE = 'https://quota-mobile.black-trout-2440.chatgpt.site'
+
+
+class MobileQuotaSync:
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def _post(self, route, body, token=None):
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
+                   'User-Agent': 'Quota-Desktop/1.0'}
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        request = urllib.request.Request(MOBILE_SITE + route, data=json.dumps(body).encode(),
+                                         headers=headers, method='POST')
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+
+    def _pairing(self):
+        try:
+            saved = json.loads(self.path.read_text(encoding='utf-8'))
+            if saved.get('expiresAt', 0) > time.time() * 1000 + 86_400_000:
+                return saved
+        except (OSError, ValueError, TypeError):
+            pass
+        saved = self._post('/api/pair', {})
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.path.with_suffix('.tmp')
+        temp.write_text(json.dumps(saved), encoding='utf-8')
+        temp.replace(self.path)
+        return saved
+
+    def sync(self, snapshot):
+        pairing = self._pairing()
+        windows = []
+        for win in snapshot.get('windows', []):
+            seconds = max(0, int(win['reset'] - time.time()))
+            reset = (f'{seconds // 86400} 天 {(seconds % 86400) // 3600} 小时后恢复'
+                     if win['duration'] >= 1440 else
+                     f'{seconds // 3600} 小时 {(seconds % 3600) // 60} 分后恢复')
+            windows.append({'label': f"{win['duration'] // 1440} 天" if win['duration'] >= 1440
+                            else f"{win['duration'] // 60} 小时",
+                            'remaining': win['remaining'], 'resetLabel': reset})
+        self._post('/api/sync', {'windows': windows, 'plan': snapshot.get('plan', '')}, pairing['writeToken'])
+        return pairing['code']
 
 
 def credential_stamp():

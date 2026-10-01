@@ -10,13 +10,13 @@ import psutil
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QStandardPaths, QLockFile
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QLinearGradient, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu, QMessageBox
-from core import Session, PendingKeys, credential_stamp, discover_codex, parse_snapshot
+from core import Session, PendingKeys, MobileQuotaSync, credential_stamp, discover_codex, parse_snapshot
 
 
 class Worker(threading.Thread):
-    def __init__(self, events, keys):
+    def __init__(self, events, keys, mobile):
         super().__init__(daemon=True)
-        self.events, self.keys = events, keys
+        self.events, self.keys, self.mobile = events, keys, mobile
         self.commands = queue.Queue()
         self.done = threading.Event()
         self.session = None
@@ -56,6 +56,10 @@ class Worker(threading.Thread):
                         'noCredit': '没有可用重置卡', 'nothingToReset': '当前无需重置'}.get(outcome, '结果未确认，重试会复用原请求')))
                 data = parse_snapshot(self.session.request('account/rateLimits/read'))
                 data['stamp'] = self.session.stamp
+                try:
+                    self.events.put((generation, 'pair', self.mobile.sync(data)))
+                except Exception:
+                    pass
                 self.events.put((generation, 'snapshot', data))
             except Exception as error:
                 self.events.put((generation, 'error', str(error)))
@@ -92,7 +96,8 @@ class Island(QWidget):
         self.dragged = False
         self.events = queue.Queue()
         folder = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
-        self.worker = Worker(self.events, PendingKeys(folder / 'pending-resets.json'))
+        self.worker = Worker(self.events, PendingKeys(folder / 'pending-resets.json'), MobileQuotaSync(folder / 'mobile-pairing.json'))
+        self.mobile_code = ''
         if not demo:
             self.worker.start()
         self.state = None
@@ -163,6 +168,8 @@ class Island(QWidget):
                 self.busy = False
                 if self.message == '正在连接…':
                     self.message = '已连接 · 每 45 秒刷新'
+            elif kind == 'pair':
+                self.mobile_code = value
             else:
                 self.message = value
                 if kind == 'error':
@@ -242,7 +249,8 @@ class Island(QWidget):
             credits=(self.snapshot or {}).get('credits')
             text(24,281,'重置卡 '+('暂未返回' if credits is None else str(credits)+' 张'),10)
             text(235,281,'处理中…' if self.busy else '使用重置卡',10,'#bbc5bd' if credits and not self.busy else '#626b65')
-            text(24,311,self.message[:33],8,'#8a958e')
+            mobile = f'手机码 {self.mobile_code}' if self.mobile_code else self.message[:33]
+            text(24,311,mobile,8,'#8a958e')
             text(24,334,'刷新',9,'#a0aaa3')
             text(295,334,'退出',9,'#a0aaa3')
         p.end()
